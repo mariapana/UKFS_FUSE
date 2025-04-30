@@ -18,6 +18,8 @@ extern "C" {
  * Defines structures for communication between UKFS driver and libfuse
  */
 
+struct fuse_session;
+
 /* FUSE request operation types */
 enum fuse_ukfs_opcode {
 	FUSE_UKFS_LOOKUP = 1,
@@ -65,6 +67,8 @@ struct fuse_ukfs_queue {
 	struct uk_semaphore count;     /* Counts pending requests */
 };
 
+extern struct fuse_ukfs_queue fuse_global_queue;
+
 /* Queue API */
 
 /**
@@ -94,9 +98,10 @@ struct fuse_ukfs_request *fuse_ukfs_queue_pop(struct fuse_ukfs_queue *q);
 /**
  * Start the FUSE daemon thread
  * @param q Request queue for the daemon to process
+ * @param se The upstream FUSE session to execute loops against
  * @return 0 on success, negative error code on failure
  */
-int fuse_daemon_start(struct fuse_ukfs_queue *q);
+int fuse_daemon_start(struct fuse_ukfs_queue *q, struct fuse_session *se);
 
 #ifdef __cplusplus
 }

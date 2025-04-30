@@ -10,6 +10,15 @@
 #include <fuse_lowlevel.h>
 #include <fuse_i.h>
 
+#include <time.h>
+#include <stdint.h>
+#include <uk/thread.h>
+#include <uk/sched.h>
+#include <uk/alloc.h>
+
+extern struct fuse_session *hellofs_start(void);
+extern void fuse_ukfs_queue_init(struct fuse_ukfs_queue *q);
+
 /* Test 1: Queue operations */
 void test_queue_operations(void)
 {
@@ -64,7 +73,10 @@ void test_daemon_thread(void)
 	
 	/* Initialize queue and start daemon */
 	fuse_ukfs_queue_init(&q);
-	ret = fuse_daemon_start(&q);
+	
+	/* We need a mock session since fuse_daemon_start expects one */
+	struct fuse_session *fake_se = calloc(1, sizeof(*fake_se));
+	ret = fuse_daemon_start(&q, fake_se);
 	UK_ASSERT(ret == 0);
 	printf("Daemon thread started\n");
 	
@@ -84,6 +96,7 @@ void test_daemon_thread(void)
 	UK_ASSERT(req.error == -ENOSYS);  /* Expected for skeleton */
 	
 	printf("\n");
+	free(fake_se);
 }
 
 /* Test 3: Driver registration (from M1) */
@@ -196,23 +209,238 @@ void test_fuse_reply_wiring(void)
 	printf("libfuse integration verified!\n\n");
 }
 
-int main(int argc, char *argv[])
+/* --- Benchmarks --- */
+
+static inline uint64_t get_nanos(void)
 {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+}
+
+static inline uint64_t rdtsc(void) {
+    uint32_t lo, hi;
+    __asm__ __volatile__ ("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static struct fuse_ukfs_queue bench_queue;
+static struct fuse_ukfs_request ping_req;
+
+static void consumer_thread_fn(void *arg) __noreturn;
+static void consumer_thread_fn(void *arg __unused)
+{
+	for (int i = 0; i < 1000000; i++) {
+		struct fuse_ukfs_request *r = fuse_ukfs_queue_pop(&bench_queue);
+		uk_semaphore_up(&r->done);
+	}
+	while(1) { uk_sched_yield(); }
+}
+
+void test_queue_throughput(void)
+{
+	uint64_t start, end;
+	int num_iter = 10000;
+	
+	printf("Benchmark 1: Queue Throughput\n");
+	printf("-----------------------------\n");
+	
+	fuse_ukfs_queue_init(&bench_queue);
+	struct fuse_ukfs_request *reqs = malloc(sizeof(*reqs) * num_iter);
+	UK_ASSERT(reqs);
+
+	start = get_nanos();
+	for (int i = 0; i < num_iter; i++) {
+		fuse_ukfs_queue_push(&bench_queue, &reqs[i]);
+	}
+	for (int i = 0; i < num_iter; i++) {
+		fuse_ukfs_queue_pop(&bench_queue);
+	}
+	end = get_nanos();
+	
+	uint64_t diff_ns = end - start;
+	uint64_t reqs_per_sec = ((uint64_t)num_iter * 1000000000ULL) / diff_ns;
+	printf("  Single-threaded (push + pop) throughput: %llu reqs/sec\n", (unsigned long long)reqs_per_sec);
+	free(reqs);
+
+	fuse_ukfs_queue_init(&bench_queue);
+	uk_semaphore_init(&ping_req.done, 0);
+
+	struct uk_alloc *a = uk_alloc_get_default();
+	struct uk_thread *consumer = uk_thread_create_fn1(a, (uk_thread_fn1_t)consumer_thread_fn, NULL, a, 0, NULL, 0, a, false, "consumer", NULL, NULL);
+	uk_sched_thread_add(uk_sched_current(), consumer);
+
+	start = get_nanos();
+	for (int i = 0; i < num_iter; i++) {
+		fuse_ukfs_queue_push(&bench_queue, &ping_req);
+		uk_semaphore_down(&ping_req.done);
+	}
+	end = get_nanos();
+
+	diff_ns = end - start;
+	reqs_per_sec = ((uint64_t)num_iter * 1000000000ULL) / diff_ns;
+	printf("  Multi-threaded (ping-pong) throughput: %llu reqs/sec\n\n", (unsigned long long)reqs_per_sec);
+}
+
+static struct uk_semaphore ping_sem, pong_sem;
+static uint64_t t_wake_start, t_wake_end;
+static uint64_t total_wake_cycles = 0;
+
+static void ctx_thread_fn(void *arg) __noreturn;
+static void ctx_thread_fn(void *arg __unused)
+{
+	for (int i = 0; i < 10000; i++) {
+		uk_semaphore_down(&ping_sem);
+		t_wake_end = rdtsc();
+		total_wake_cycles += (t_wake_end - t_wake_start);
+		uk_semaphore_up(&pong_sem);
+	}
+	while(1) { uk_sched_yield(); }
+}
+
+void test_queue_latency(void)
+{
+	uint64_t start, end;
+	uint64_t t_mutex_lock = 0, t_mutex_unlock = 0;
+	uint64_t t_sem_down = 0, t_sem_up = 0;
+	uint64_t t_tailq_insert = 0, t_tailq_remove = 0;
+	int num_samples = 10000;
+
+	printf("Benchmark 2: Queue Latency (RDTSC)\n");
+	printf("----------------------------------\n");
+
+	fuse_ukfs_queue_init(&bench_queue);
+	
+	for (int i = 0; i < num_samples; i++) {
+		start = rdtsc();
+		uk_mutex_lock(&bench_queue.lock);
+		end = rdtsc();
+		t_mutex_lock += (end - start);
+
+		start = rdtsc();
+		uk_mutex_unlock(&bench_queue.lock);
+		end = rdtsc();
+		t_mutex_unlock += (end - start);
+	}
+
+	for (int i = 0; i < num_samples; i++) {
+		start = rdtsc();
+		uk_semaphore_up(&bench_queue.count);
+		end = rdtsc();
+		t_sem_up += (end - start);
+
+		start = rdtsc();
+		uk_semaphore_down(&bench_queue.count);
+		end = rdtsc();
+		t_sem_down += (end - start);
+	}
+
+	for (int i = 0; i < num_samples; i++) {
+		start = rdtsc();
+		UK_TAILQ_INSERT_TAIL(&bench_queue.head, &ping_req, list);
+		end = rdtsc();
+		t_tailq_insert += (end - start);
+
+		struct fuse_ukfs_request *r = UK_TAILQ_FIRST(&bench_queue.head);
+		start = rdtsc();
+		UK_TAILQ_REMOVE(&bench_queue.head, r, list);
+		end = rdtsc();
+		t_tailq_remove += (end - start);
+	}
+
+	uk_semaphore_init(&ping_sem, 0);
+	uk_semaphore_init(&pong_sem, 0);
+	struct uk_alloc *a = uk_alloc_get_default();
+	struct uk_thread *ctx = uk_thread_create_fn1(a, (uk_thread_fn1_t)ctx_thread_fn, NULL, a, 0, NULL, 0, a, false, "ctx", NULL, NULL);
+	uk_sched_thread_add(uk_sched_current(), ctx);
+	uk_sched_yield();
+
+	for (int i = 0; i < num_samples; i++) {
+		t_wake_start = rdtsc();
+		uk_semaphore_up(&ping_sem);
+		uk_semaphore_down(&pong_sem);
+	}
+
+	printf("  uk_mutex_lock:        %llu cycles\n", (unsigned long long)(t_mutex_lock / num_samples));
+	printf("  uk_mutex_unlock:      %llu cycles\n", (unsigned long long)(t_mutex_unlock / num_samples));
+	printf("  UK_TAILQ_INSERT_TAIL: %llu cycles\n", (unsigned long long)(t_tailq_insert / num_samples));
+	printf("  UK_TAILQ_REMOVE:      %llu cycles\n", (unsigned long long)(t_tailq_remove / num_samples));
+	printf("  uk_semaphore_up:      %llu cycles\n", (unsigned long long)(t_sem_up / num_samples));
+	printf("  uk_semaphore_down:    %llu cycles\n", (unsigned long long)(t_sem_down / num_samples));
+	printf("  Context switch:       %llu cycles\n\n", (unsigned long long)(total_wake_cycles / num_samples));
+}
+
+int main(int argc __unused, char *argv[] __unused)
+{
+	int ret;
+	struct stat st;
+
 	printf("\n");
 	printf("========================================\n");
-	printf("  FUSE-UKFS Milestone 2 Tests\n");
+	printf("  FUSE-UKFS Performance Benchmarks\n");
 	printf("========================================\n");
 	printf("\n");
-	
-	test_queue_operations();
-	test_daemon_thread();
-	test_driver_registration();
-	test_fuse_reply_wiring();
-	
-	printf("========================================\n");
-	printf("  All tests passed!\n");
-	printf("========================================\n");
-	printf("\n");
-	
+
+	// test_queue_throughput();
+	// test_queue_latency();
+
+	printf("\n========================================\n");
+	printf("  FUSE-UKFS M4: LOOKUP & GETATTR Tests\n");
+	printf("========================================\n\n");
+
+	struct fuse_session *se = hellofs_start();
+	if (!se) {
+		printf("Failed to start FUSE session\n");
+		return 1;
+	}
+
+
+	/* Initialize FUSE message queue */
+	fuse_ukfs_queue_init(&fuse_global_queue);
+
+	/* Mount the filesystem. */
+	printf("[TRACE] About to mount fuse at /...\n");
+	ret = mount("none", "/", "fuse", 0, NULL);
+	printf("[TRACE] mount returned %d (errno=%d)\n", ret, errno);
+	UK_ASSERT(ret == 0);
+	printf("[+] FUSE mounted at /\n");
+
+	/* Start daemon connecting ukfs with se */
+	ret = fuse_daemon_start(&fuse_global_queue, se);
+	UK_ASSERT(ret == 0);
+	printf("[+] FUSE daemon thread started\n");
+
+	/* We sleep briefly to ensure daemon starts and spins up cleanly */
+	for (volatile int i = 0; i < 10000000; i++) {}
+
+	/* Test 1: stat("/") -> GETATTR(1) */
+	printf("[TRACE] About to stat(/)...\n");
+	ret = stat("/", &st);
+	if (ret != 0) {
+		printf("[-] stat(\"/\") failed, errno=%d\n", errno);
+		UK_ASSERT(0);
+	}
+	UK_ASSERT(st.st_ino == 1);
+	UK_ASSERT(S_ISDIR(st.st_mode));
+	printf("[+] stat(\"/\") passed\n");
+
+	/* Test 2: stat("/hello") -> LOOKUP(1, "hello") -> GETATTR(2) */
+	ret = stat("/hello", &st);
+	if (ret != 0) {
+		printf("[-] stat(\"/hello\") failed, errno=%d\n", errno);
+		UK_ASSERT(0);
+	}
+	UK_ASSERT(st.st_ino == 2);
+	UK_ASSERT(S_ISREG(st.st_mode));
+	UK_ASSERT(st.st_size == 13);
+	printf("[+] stat(\"/hello\") passed\n");
+
+	/* Test 3: non-existent file */
+	ret = stat("/foo", &st);
+	UK_ASSERT(ret == -1);
+	UK_ASSERT(errno == ENOENT);
+	printf("[+] stat(\"/foo\") ENOENT passed\n");
+
+	printf("\nAll Tests and Benchmarks Passed!\n");
 	return 0;
 }

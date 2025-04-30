@@ -3686,6 +3686,7 @@ void fuse_session_process_buf_internal(struct fuse_session *se,
 
 	fuse_session_in2req(req, in);
 	req->ch = ch ? fuse_chan_get(ch) : NULL;
+	req->ukfs_req = (void *)ch; /* UKFS-FUSE back-pointer injection */
 
 	err = fuse_req_opcode_sanity_ok(se, in->opcode);
 	if (err)
