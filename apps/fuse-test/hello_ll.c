@@ -60,9 +60,29 @@ static void hello_ll_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
 	fuse_reply_entry(req, &e);
 }
 
+static void hello_ll_read(fuse_req_t req, fuse_ino_t ino, size_t size,
+			  off_t off, struct fuse_file_info *fi)
+{
+	(void)fi;
+	if (ino != 2) {
+		fuse_reply_err(req, EISDIR);
+		return;
+	}
+	size_t len = strlen(hello_str);
+	if (off >= (off_t)len) {
+		fuse_reply_buf(req, NULL, 0);
+		return;
+	}
+	size_t to_read = len - (size_t)off;
+	if (to_read > size)
+		to_read = size;
+	fuse_reply_buf(req, hello_str + off, to_read);
+}
+
 static const struct fuse_lowlevel_ops hello_ll_oper = {
 	.lookup		= hello_ll_lookup,
 	.getattr	= hello_ll_getattr,
+	.read		= hello_ll_read,
 };
 
 /* Start the hello_ll FUSE backend */

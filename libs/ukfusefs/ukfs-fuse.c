@@ -17,9 +17,12 @@ struct fusefs_file {
 	uk_file_refcnt refcnt;
 	struct uk_file_state fstate;
 	uint64_t nodeid;
+	uint64_t fh;  /* file handle from FUSE_OPEN; (uint64_t)-1 = not yet opened */
 };
 
 struct fuse_ukfs_queue fuse_global_queue;
+
+static uint64_t fuse_req_unique = 1;
 
 static void fusefs_release(const struct uk_file *f, int what)
 {
@@ -28,15 +31,83 @@ static void fusefs_release(const struct uk_file *f, int what)
 		uk_free(uk_alloc_get_default(), ff);
 }
 
-static ssize_t fusefs_read(const struct uk_file *f __unused, const struct iovec *iov __unused,
-			   size_t iovcnt __unused, size_t off __unused, long flags __unused)
+static int fusefs_do_open(struct fusefs_file *ff)
 {
-	return -ENOSYS;
+	struct fuse_ukfs_request req;
+
+	memset(&req, 0, sizeof(req));
+	req.opcode = FUSE_UKFS_OPEN;
+	req.unique = __atomic_fetch_add(&fuse_req_unique, 1, __ATOMIC_SEQ_CST);
+	req.in.open.ino   = ff->nodeid;
+	req.in.open.flags = 0; /* O_RDONLY */
+	uk_semaphore_init(&req.done, 0);
+
+	fuse_ukfs_queue_push(&fuse_global_queue, &req);
+	uk_semaphore_down(&req.done);
+
+	if (req.error)
+		return req.error;
+
+	struct fuse_open_out *out = req.reply_data;
+	if (!out)
+		return -EIO;
+	ff->fh = out->fh;
+	free(out);
+	return 0;
 }
 
+static ssize_t fusefs_read(const struct uk_file *f, const struct iovec *iov,
+			   size_t iovcnt, size_t off, long flags __unused)
+{
+	struct fusefs_file *ff = (struct fusefs_file *)f;
 
+	if (ff->fh == (uint64_t)-1) {
+		int err = fusefs_do_open(ff);
+		if (err)
+			return err;
+	}
 
-static uint64_t fuse_req_unique = 1;
+	size_t total = 0;
+	for (size_t i = 0; i < iovcnt; i++)
+		total += iov[i].iov_len;
+	if (total == 0)
+		return 0;
+
+	struct fuse_ukfs_request req;
+
+	memset(&req, 0, sizeof(req));
+	req.opcode = FUSE_UKFS_READ;
+	req.unique = __atomic_fetch_add(&fuse_req_unique, 1, __ATOMIC_SEQ_CST);
+	req.in.read.ino    = ff->nodeid;
+	req.in.read.fh     = ff->fh;
+	req.in.read.offset = (uint64_t)off;
+	req.in.read.size   = (uint32_t)total;
+	uk_semaphore_init(&req.done, 0);
+
+	fuse_ukfs_queue_push(&fuse_global_queue, &req);
+	uk_semaphore_down(&req.done);
+
+	if (req.error)
+		return req.error;
+
+	if (!req.reply_data)
+		return 0; /* EOF */
+
+	/* Scatter reply buffer across the iov */
+	char *src = req.reply_data;
+	size_t remaining = req.reply_len;
+	ssize_t copied = 0;
+	for (size_t i = 0; i < iovcnt && remaining > 0; i++) {
+		size_t n = iov[i].iov_len < remaining ? iov[i].iov_len : remaining;
+		memcpy(iov[i].iov_base, src, n);
+		src += n;
+		remaining -= n;
+		copied += n;
+	}
+	free(req.reply_data);
+	return copied;
+}
+
 
 #include <stdio.h>
 static int fusefs_getstat(const struct uk_file *f, unsigned int mask __unused, struct uk_statx *arg)
@@ -126,6 +197,7 @@ static int fusefs_lookup(const struct uk_file *f, const char *path, size_t len,
 		child->refcnt = UK_FILE_REFCNT_INIT_VALUE(child->refcnt);
 		child->fstate = UK_FILE_STATE_INIT_VALUE(child->fstate);
 		child->nodeid = e->ino;
+		child->fh = (uint64_t)-1;
 
 		child->f.vol = f->vol;
 		child->f.node = child;
@@ -174,6 +246,7 @@ static const struct uk_file *fusefs_vopen(union uk_fs_vopen_vol vol __unused,
 	n->fstate.pollq.poll_fn = NULL;
 #endif
 	n->nodeid = 1; /* FUSE ROOT */
+	n->fh = (uint64_t)-1;
 	
 	n->f.vol = NULL;
 	n->f.node = n;

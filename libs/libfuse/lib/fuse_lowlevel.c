@@ -597,8 +597,26 @@ int fuse_passthrough_close(fuse_req_t req, int backing_id)
 
 int fuse_reply_open(fuse_req_t req, const struct fuse_file_info *f)
 {
-	struct fuse_open_out arg;
+	struct fuse_ukfs_request *ukfs_req = req->ukfs_req;
+	if (ukfs_req) {
+		struct fuse_open_out *out = malloc(sizeof(*out));
+		if (out) {
+			memset(out, 0, sizeof(*out));
+			fill_open(out, f);
+			ukfs_req->error = 0;
+			ukfs_req->reply_data = out;
+			ukfs_req->reply_len = sizeof(*out);
+		} else {
+			ukfs_req->error = -ENOMEM;
+			ukfs_req->reply_data = NULL;
+			ukfs_req->reply_len = 0;
+		}
+		uk_semaphore_up(&ukfs_req->done);
+		fuse_free_req(req);
+		return 0;
+	}
 
+	struct fuse_open_out arg;
 	memset(&arg, 0, sizeof(arg));
 	fill_open(&arg, f);
 	return send_reply_ok(req, &arg, sizeof(arg));

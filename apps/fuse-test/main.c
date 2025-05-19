@@ -6,6 +6,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 #define FUSE_USE_VERSION 31
 #include <fuse_lowlevel.h>
 #include <fuse_i.h>
@@ -440,6 +442,23 @@ int main(int argc __unused, char *argv[] __unused)
 	UK_ASSERT(ret == -1);
 	UK_ASSERT(errno == ENOENT);
 	printf("[+] stat(\"/foo\") ENOENT passed\n");
+
+	/* Test 4: open + read "/hello" */
+	int fd = open("/hello", O_RDONLY);
+	if (fd < 0) {
+		printf("[-] open(\"/hello\") failed, errno=%d\n", errno);
+		UK_ASSERT(0);
+	}
+	char rbuf[32];
+	memset(rbuf, 0, sizeof(rbuf));
+	ssize_t n = read(fd, rbuf, sizeof(rbuf) - 1);
+	if (n < 0) {
+		printf("[-] read(\"/hello\") failed, errno=%d\n", errno);
+		UK_ASSERT(0);
+	}
+	close(fd);
+	UK_ASSERT(strcmp(rbuf, "Hello World!\n") == 0);
+	printf("[+] read(\"/hello\") = \"%s\" passed\n", rbuf);
 
 	printf("\nAll Tests and Benchmarks Passed!\n");
 	return 0;

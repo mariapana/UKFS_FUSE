@@ -61,6 +61,22 @@ static void fuse_daemon_thread(void *arg)
 			struct fuse_getattr_in arg = { .getattr_flags = 0 };
 			memcpy(buf + in->len, &arg, sizeof(arg));
 			in->len += sizeof(arg);
+		} else if (req->opcode == FUSE_UKFS_OPEN) {
+			in->opcode = FUSE_OPEN;
+			in->nodeid = req->in.open.ino;
+			struct fuse_open_in arg = { .flags = req->in.open.flags };
+			memcpy(buf + in->len, &arg, sizeof(arg));
+			in->len += sizeof(arg);
+		} else if (req->opcode == FUSE_UKFS_READ) {
+			in->opcode = FUSE_READ;
+			in->nodeid = req->in.read.ino;
+			struct fuse_read_in arg = {
+				.fh     = req->in.read.fh,
+				.offset = req->in.read.offset,
+				.size   = req->in.read.size,
+			};
+			memcpy(buf + in->len, &arg, sizeof(arg));
+			in->len += sizeof(arg);
 		} else {
 			req->error = -ENOSYS;
 			req->reply_data = NULL;

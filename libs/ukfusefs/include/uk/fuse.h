@@ -47,8 +47,18 @@ struct fuse_ukfs_request {
 		struct {
 			uint64_t ino;
 		} getattr;
-		
-		/* More operation-specific data to be added */
+
+		struct {
+			uint64_t ino;
+			uint32_t flags;
+		} open;
+
+		struct {
+			uint64_t ino;
+			uint64_t fh;
+			uint64_t offset;
+			uint32_t size;
+		} read;
 	} in;
 	
 	/* Output/reply data */
