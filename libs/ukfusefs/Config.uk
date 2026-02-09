@@ -1,0 +1,5 @@
+config LIBUKFUSEFS
+	bool "ukfusefs: FUSE wrapper for UKFS"
+	select LIBUKFILE
+	select LIBUKFS
+	select LIBUKDEBUG

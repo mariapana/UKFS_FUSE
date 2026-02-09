@@ -1,0 +1,3 @@
+config APP_FUSE_TEST
+	bool "Fuse Test App"
+	default y

@@ -1,0 +1,3 @@
+$(eval $(call addlib,appfuse_test))
+
+APPFUSE_TEST_SRCS-y += $(APPFUSE_TEST_BASE)/main.c
