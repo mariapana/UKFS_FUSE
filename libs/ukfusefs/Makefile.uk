@@ -1,5 +1,7 @@
 $(eval $(call addlib_s,libukfusefs,$(CONFIG_LIBUKFUSEFS)))
 
-LIBUKFUSEFS_CINCLUDES-y += -I$(LIBUKFUSEFS_BASE)/include
+CINCLUDES-y += -I$(LIBUKFUSEFS_BASE)/include
 
 LIBUKFUSEFS_SRCS-y += $(LIBUKFUSEFS_BASE)/ukfs-fuse.c
+LIBUKFUSEFS_SRCS-y += $(LIBUKFUSEFS_BASE)/fuse_queue.c
+LIBUKFUSEFS_SRCS-y += $(LIBUKFUSEFS_BASE)/fuse_daemon.c
