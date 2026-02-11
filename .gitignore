@@ -1,19 +1,10 @@
-# Build artifacts
 apps/*/build/
 apps/*/.config
 apps/*/.config.old
 apps/*/build.log
-
-# Unikraft source (external dependency)
 unikraft/
-
-# Documentation (track separately or later)
 unikraft-readmes/
 libs/ukfusefs/README.md
-
-# Office files
 *.pdf
 *.docx
-
-# Other
 Bibliografie/
