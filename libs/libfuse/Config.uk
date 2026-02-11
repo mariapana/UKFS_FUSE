@@ -1,0 +1,9 @@
+config LIBLIBFUSE
+	bool "libfuse: FUSE library (minimal port)"
+	select LIBUKALLOC
+	select LIBUKDEBUG
+	select LIBPOSIX_PROCESS
+	select LIBPOSIX_USER
+	help
+		Minimal port of libfuse low-level API for Unikraft.
+		Supports basic FUSE operations without /dev/fuse.

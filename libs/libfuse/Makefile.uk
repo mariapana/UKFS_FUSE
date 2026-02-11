@@ -1,0 +1,12 @@
+$(eval $(call addlib_s,liblibfuse,$(CONFIG_LIBLIBFUSE)))
+
+CINCLUDES-y += -I$(LIBLIBFUSE_BASE)/include
+
+# Suppress warnings for imported libfuse code
+LIBLIBFUSE_CFLAGS-y += -Wno-unused-parameter -Wno-sign-compare
+
+# Source files (minimal subset)
+LIBLIBFUSE_SRCS-y += $(LIBLIBFUSE_BASE)/lib/fuse_lowlevel.c
+LIBLIBFUSE_SRCS-y += $(LIBLIBFUSE_BASE)/lib/helper.c
+LIBLIBFUSE_SRCS-y += $(LIBLIBFUSE_BASE)/lib/buffer.c
+LIBLIBFUSE_SRCS-y += $(LIBLIBFUSE_BASE)/lib/fuse_opt.c
