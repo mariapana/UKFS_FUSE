@@ -4,6 +4,11 @@
 #include <uk/fuse.h>
 #include <uk/assert.h>
 #include <string.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#define FUSE_USE_VERSION 31
+#include <fuse_lowlevel.h>
+#include <fuse_i.h>
 
 /* Test 1: Queue operations */
 void test_queue_operations(void)
@@ -102,6 +107,95 @@ void test_driver_registration(void)
 	printf("\n");
 }
 
+/* Test 4: libfuse Reply Wiring (from M3) */
+void test_fuse_reply_wiring(void)
+{
+	struct fuse_ukfs_request ukfs_req;
+	struct fuse_req *fake_req;
+	struct fuse_session fake_se;
+	struct fuse_entry_param fake_entry;
+	struct stat fake_stat;
+	char fake_buf[] = "hello fuse";
+	int ret;
+	
+	printf("Test 4: libfuse Reply Wiring\n");
+	printf("----------------------------\n");
+	
+	/* Initialize the UKFS request and fake FUSE session */
+	memset(&fake_se, 0, sizeof(fake_se));
+	fake_se.conn.no_interrupt = 1;
+	
+	printf("  Testing fuse_reply_err...\n");
+	memset(&ukfs_req, 0, sizeof(ukfs_req));
+	uk_semaphore_init(&ukfs_req.done, 0);
+	fake_req = calloc(1, sizeof(*fake_req));
+	fake_req->ukfs_req = &ukfs_req;
+	fake_req->se = &fake_se;
+	fake_req->ref_cnt = 1;
+	
+	ret = fuse_reply_err(fake_req, ENOENT);
+	UK_ASSERT(ret == 0);
+	UK_ASSERT(ukfs_req.error == -ENOENT);
+	uk_semaphore_down(&ukfs_req.done); /* Should not block */
+	
+	printf("  Testing fuse_reply_entry...\n");
+	memset(&ukfs_req, 0, sizeof(ukfs_req));
+	uk_semaphore_init(&ukfs_req.done, 0);
+	fake_req = calloc(1, sizeof(*fake_req));
+	fake_req->ukfs_req = &ukfs_req;
+	fake_req->se = &fake_se;
+	fake_req->ref_cnt = 1;
+	
+	memset(&fake_entry, 0, sizeof(fake_entry));
+	fake_entry.ino = 42;
+	fake_entry.attr.st_size = 1024;
+	
+	ret = fuse_reply_entry(fake_req, &fake_entry);
+	UK_ASSERT(ret == 0);
+	UK_ASSERT(ukfs_req.error == 0);
+	UK_ASSERT(ukfs_req.reply_len == sizeof(struct fuse_entry_param));
+	UK_ASSERT(((struct fuse_entry_param *)ukfs_req.reply_data)->ino == 42);
+	uk_semaphore_down(&ukfs_req.done);
+	free(ukfs_req.reply_data);
+	
+	printf("  Testing fuse_reply_attr...\n");
+	memset(&ukfs_req, 0, sizeof(ukfs_req));
+	uk_semaphore_init(&ukfs_req.done, 0);
+	fake_req = calloc(1, sizeof(*fake_req));
+	fake_req->ukfs_req = &ukfs_req;
+	fake_req->se = &fake_se;
+	fake_req->ref_cnt = 1;
+	
+	memset(&fake_stat, 0, sizeof(fake_stat));
+	fake_stat.st_ino = 99;
+	
+	ret = fuse_reply_attr(fake_req, &fake_stat, 1.0);
+	UK_ASSERT(ret == 0);
+	UK_ASSERT(ukfs_req.error == 0);
+	UK_ASSERT(ukfs_req.reply_len == sizeof(struct stat));
+	UK_ASSERT(((struct stat *)ukfs_req.reply_data)->st_ino == 99);
+	uk_semaphore_down(&ukfs_req.done);
+	free(ukfs_req.reply_data);
+	
+	printf("  Testing fuse_reply_buf...\n");
+	memset(&ukfs_req, 0, sizeof(ukfs_req));
+	uk_semaphore_init(&ukfs_req.done, 0);
+	fake_req = calloc(1, sizeof(*fake_req));
+	fake_req->ukfs_req = &ukfs_req;
+	fake_req->se = &fake_se;
+	fake_req->ref_cnt = 1;
+	
+	ret = fuse_reply_buf(fake_req, fake_buf, sizeof(fake_buf));
+	UK_ASSERT(ret == 0);
+	UK_ASSERT(ukfs_req.error == 0);
+	UK_ASSERT(ukfs_req.reply_len == sizeof(fake_buf));
+	UK_ASSERT(strcmp((char *)ukfs_req.reply_data, "hello fuse") == 0);
+	uk_semaphore_down(&ukfs_req.done);
+	free(ukfs_req.reply_data);
+	
+	printf("libfuse integration verified!\n\n");
+}
+
 int main(int argc, char *argv[])
 {
 	printf("\n");
@@ -113,6 +207,7 @@ int main(int argc, char *argv[])
 	test_queue_operations();
 	test_daemon_thread();
 	test_driver_registration();
+	test_fuse_reply_wiring();
 	
 	printf("========================================\n");
 	printf("  All tests passed!\n");

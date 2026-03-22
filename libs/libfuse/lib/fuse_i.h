@@ -11,6 +11,7 @@
 
 #include "fuse.h"
 #include "fuse_lowlevel.h"
+#include "fuse_config.h"
 #include "util.h"
 
 #include <pthread.h>
@@ -20,12 +21,14 @@
 #include <errno.h>
 #include <stdatomic.h>
 
+#ifndef MIN
 #define MIN(a, b) \
 ({									\
 	typeof(a) _a = (a);						\
 	typeof(b) _b = (b);						\
 	_a < _b ? _a : _b;						\
 })
+#endif
 
 struct mount_opts;
 struct fuse_ring_pool;
@@ -35,6 +38,7 @@ struct fuse_req {
 	uint64_t unique;
 	_Atomic int ref_cnt;
 	pthread_mutex_t lock;
+	struct fuse_ukfs_request *ukfs_req;
 	struct fuse_ctx ctx;
 	struct fuse_chan *ch;
 	int interrupted;

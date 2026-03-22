@@ -4,6 +4,11 @@ config LIBLIBFUSE
 	select LIBUKDEBUG
 	select LIBPOSIX_PROCESS
 	select LIBPOSIX_USER
+	select LIBPOSIX_VFS
+	select LIBPOSIX_EVENTMAP
+	select LIBPOSIX_FUTEX
+	select LIBPOSIX_PIPE
+	select LIBPOSIX_POLL
 	help
 		Minimal port of libfuse low-level API for Unikraft.
 		Supports basic FUSE operations without /dev/fuse.

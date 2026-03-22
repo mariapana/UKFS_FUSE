@@ -408,7 +408,15 @@ static int send_reply_ok(fuse_req_t req, const void *arg, size_t argsize)
 
 int fuse_reply_err(fuse_req_t req, int err)
 {
-	return send_reply(req, -err, NULL, 0);
+	struct fuse_ukfs_request *ukfs_req = req->ukfs_req;
+	if (ukfs_req) {
+		ukfs_req->error = -err;
+		ukfs_req->reply_data = NULL;
+		ukfs_req->reply_len = 0;
+		uk_semaphore_up(&ukfs_req->done);
+	}
+	fuse_free_req(req);
+	return 0;
 }
 
 void fuse_reply_none(fuse_req_t req)
@@ -505,18 +513,22 @@ static void fill_open(struct fuse_open_out *arg,
 
 int fuse_reply_entry(fuse_req_t req, const struct fuse_entry_param *e)
 {
-	struct fuse_entry_out arg;
-	size_t size = req->se->conn.proto_minor < 9 ?
-		FUSE_COMPAT_ENTRY_OUT_SIZE : sizeof(arg);
-
-	/* before ABI 7.4 e->ino == 0 was invalid, only ENOENT meant
-	   negative entry */
+	struct fuse_ukfs_request *ukfs_req = req->ukfs_req;
 	if (!e->ino && req->se->conn.proto_minor < 4)
 		return fuse_reply_err(req, ENOENT);
 
-	memset(&arg, 0, sizeof(arg));
-	fill_entry(&arg, e);
-	return send_reply_ok(req, &arg, size);
+	if (ukfs_req) {
+		ukfs_req->error = 0;
+		ukfs_req->reply_len = sizeof(struct fuse_entry_param);
+		ukfs_req->reply_data = malloc(ukfs_req->reply_len);
+		if (ukfs_req->reply_data)
+			memcpy(ukfs_req->reply_data, e, ukfs_req->reply_len);
+		else
+			ukfs_req->error = -ENOMEM;
+		uk_semaphore_up(&ukfs_req->done);
+	}
+	fuse_free_req(req);
+	return 0;
 }
 
 int fuse_reply_create(fuse_req_t req, const struct fuse_entry_param *e,
@@ -538,16 +550,19 @@ int fuse_reply_create(fuse_req_t req, const struct fuse_entry_param *e,
 int fuse_reply_attr(fuse_req_t req, const struct stat *attr,
 		    double attr_timeout)
 {
-	struct fuse_attr_out arg;
-	size_t size = req->se->conn.proto_minor < 9 ?
-		FUSE_COMPAT_ATTR_OUT_SIZE : sizeof(arg);
-
-	memset(&arg, 0, sizeof(arg));
-	arg.attr_valid = calc_timeout_sec(attr_timeout);
-	arg.attr_valid_nsec = calc_timeout_nsec(attr_timeout);
-	convert_stat(attr, &arg.attr);
-
-	return send_reply_ok(req, &arg, size);
+	struct fuse_ukfs_request *ukfs_req = req->ukfs_req;
+	if (ukfs_req) {
+		ukfs_req->error = 0;
+		ukfs_req->reply_len = sizeof(struct stat);
+		ukfs_req->reply_data = malloc(ukfs_req->reply_len);
+		if (ukfs_req->reply_data)
+			memcpy(ukfs_req->reply_data, attr, ukfs_req->reply_len);
+		else
+			ukfs_req->error = -ENOMEM;
+		uk_semaphore_up(&ukfs_req->done);
+	}
+	fuse_free_req(req);
+	return 0;
 }
 
 int fuse_reply_readlink(fuse_req_t req, const char *linkname)
@@ -623,7 +638,19 @@ int fuse_reply_write(fuse_req_t req, size_t count)
 
 int fuse_reply_buf(fuse_req_t req, const char *buf, size_t size)
 {
-	return send_reply_ok(req, buf, size);
+	struct fuse_ukfs_request *ukfs_req = req->ukfs_req;
+	if (ukfs_req) {
+		ukfs_req->error = 0;
+		ukfs_req->reply_len = size;
+		ukfs_req->reply_data = malloc(size);
+		if (ukfs_req->reply_data && size > 0 && buf != NULL)
+			memcpy(ukfs_req->reply_data, buf, size);
+		else if (!ukfs_req->reply_data && size > 0)
+			ukfs_req->error = -ENOMEM;
+		uk_semaphore_up(&ukfs_req->done);
+	}
+	fuse_free_req(req);
+	return 0;
 }
 
 static int fuse_send_data_iov_fallback(struct fuse_session *se,
@@ -1075,7 +1102,9 @@ int fuse_reply_lock(fuse_req_t req, const struct flock *lock)
 		else
 			arg.lk.end = lock->l_start + lock->l_len - 1;
 	}
+#ifdef HAVE_FLOCK_L_PID
 	arg.lk.pid = lock->l_pid;
+#endif
 	return send_reply_ok(req, &arg, sizeof(arg));
 }
 
@@ -2130,7 +2159,9 @@ static void convert_fuse_file_lock(const struct fuse_file_lock *fl,
 		flock->l_len = 0;
 	else
 		flock->l_len = fl->end - fl->start + 1;
+#ifdef HAVE_FLOCK_L_PID
 	flock->l_pid = fl->pid;
+#endif
 }
 
 static void _do_getlk(fuse_req_t req, const fuse_ino_t nodeid,

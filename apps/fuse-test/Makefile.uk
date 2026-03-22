@@ -1,3 +1,7 @@
 $(eval $(call addlib,appfuse_test))
 
+APPFUSE_TEST_CINCLUDES-y += -I$(APPFUSE_TEST_BASE)/../../libs/libfuse/include/fuse
+APPFUSE_TEST_CINCLUDES-y += -I$(APPFUSE_TEST_BASE)/../../libs/libfuse/include
+APPFUSE_TEST_CINCLUDES-y += -I$(APPFUSE_TEST_BASE)/../../libs/libfuse/lib
+
 APPFUSE_TEST_SRCS-y += $(APPFUSE_TEST_BASE)/main.c

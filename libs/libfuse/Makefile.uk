@@ -1,6 +1,7 @@
 $(eval $(call addlib_s,liblibfuse,$(CONFIG_LIBLIBFUSE)))
 
 CINCLUDES-y += -I$(LIBLIBFUSE_BASE)/include
+LIBLIBFUSE_CINCLUDES-y += -I$(LIBLIBFUSE_BASE)/include/fuse -I$(LIBLIBFUSE_BASE)/lib
 
 # Suppress warnings for imported libfuse code
 LIBLIBFUSE_CFLAGS-y += -Wno-unused-parameter -Wno-sign-compare
@@ -10,3 +11,9 @@ LIBLIBFUSE_SRCS-y += $(LIBLIBFUSE_BASE)/lib/fuse_lowlevel.c
 LIBLIBFUSE_SRCS-y += $(LIBLIBFUSE_BASE)/lib/helper.c
 LIBLIBFUSE_SRCS-y += $(LIBLIBFUSE_BASE)/lib/buffer.c
 LIBLIBFUSE_SRCS-y += $(LIBLIBFUSE_BASE)/lib/fuse_opt.c
+LIBLIBFUSE_SRCS-y += $(LIBLIBFUSE_BASE)/lib/cuse_lowlevel.c
+LIBLIBFUSE_SRCS-y += $(LIBLIBFUSE_BASE)/lib/fuse_log.c
+LIBLIBFUSE_SRCS-y += $(LIBLIBFUSE_BASE)/lib/fuse_uring_stub.c
+LIBLIBFUSE_SRCS-y += $(LIBLIBFUSE_BASE)/lib/fuse_channel_stub.c
+LIBLIBFUSE_SRCS-y += $(LIBLIBFUSE_BASE)/lib/fuse_compat_stub.c
+LIBLIBFUSE_SRCS-y += $(LIBLIBFUSE_BASE)/lib/fuse_posix_stub.c
