@@ -79,10 +79,48 @@ static void hello_ll_read(fuse_req_t req, fuse_ino_t ino, size_t size,
 	fuse_reply_buf(req, hello_str + off, to_read);
 }
 
+static void hello_ll_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
+			     off_t off, struct fuse_file_info *fi)
+{
+	(void)fi;
+	if (ino != 1) {
+		fuse_reply_err(req, ENOTDIR);
+		return;
+	}
+
+	static const struct {
+		const char *name;
+		fuse_ino_t  ino;
+		unsigned int mode;
+	} entries[] = {
+		{".",     1, S_IFDIR},
+		{"..",    1, S_IFDIR},
+		{"hello", 2, S_IFREG},
+	};
+	int nentries = 3;
+
+	char buf[4096];
+	size_t pos = 0;
+
+	for (int i = (int)off; i < nentries; i++) {
+		struct stat stbuf = {0};
+		stbuf.st_ino  = entries[i].ino;
+		stbuf.st_mode = entries[i].mode;
+		size_t entsize = fuse_add_direntry(req, buf + pos, sizeof(buf) - pos,
+						   entries[i].name, &stbuf, i + 1);
+		if (pos + entsize > size)
+			break;
+		pos += entsize;
+	}
+
+	fuse_reply_buf(req, buf, pos);
+}
+
 static const struct fuse_lowlevel_ops hello_ll_oper = {
 	.lookup		= hello_ll_lookup,
 	.getattr	= hello_ll_getattr,
 	.read		= hello_ll_read,
+	.readdir	= hello_ll_readdir,
 };
 
 /* Start the hello_ll FUSE backend */

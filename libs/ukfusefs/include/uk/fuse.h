@@ -27,6 +27,7 @@ enum fuse_ukfs_opcode {
 	FUSE_UKFS_OPEN,
 	FUSE_UKFS_READ,
 	FUSE_UKFS_READDIR,
+	FUSE_UKFS_OPENDIR,
 	/* More opcodes to be added in later milestones */
 };
 

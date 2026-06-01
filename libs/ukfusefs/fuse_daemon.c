@@ -77,6 +77,16 @@ static void fuse_daemon_thread(void *arg)
 			};
 			memcpy(buf + in->len, &arg, sizeof(arg));
 			in->len += sizeof(arg);
+		} else if (req->opcode == FUSE_UKFS_READDIR) {
+			in->opcode = FUSE_READDIR;
+			in->nodeid = req->in.read.ino;
+			struct fuse_read_in arg = {
+				.fh     = req->in.read.fh,
+				.offset = req->in.read.offset,
+				.size   = req->in.read.size,
+			};
+			memcpy(buf + in->len, &arg, sizeof(arg));
+			in->len += sizeof(arg);
 		} else {
 			req->error = -ENOSYS;
 			req->reply_data = NULL;

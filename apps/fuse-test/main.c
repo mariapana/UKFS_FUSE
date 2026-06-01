@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <dirent.h>
 #define FUSE_USE_VERSION 31
 #include <fuse_lowlevel.h>
 #include <fuse_i.h>
@@ -459,6 +460,24 @@ int main(int argc __unused, char *argv[] __unused)
 	close(fd);
 	UK_ASSERT(strcmp(rbuf, "Hello World!\n") == 0);
 	printf("[+] read(\"/hello\") = \"%s\" passed\n", rbuf);
+
+	/* Test 5: opendir("/") + readdir */
+	DIR *d = opendir("/");
+	if (!d) {
+		printf("[-] opendir(\"/\") failed, errno=%d\n", errno);
+		UK_ASSERT(0);
+	}
+	int found_hello = 0;
+	struct dirent *de;
+	while ((de = readdir(d)) != NULL) {
+		printf("  readdir: inode=%llu type=%d name=%s\n",
+		       (unsigned long long)de->d_ino, (int)de->d_type, de->d_name);
+		if (strcmp(de->d_name, "hello") == 0)
+			found_hello = 1;
+	}
+	closedir(d);
+	UK_ASSERT(found_hello);
+	printf("[+] readdir(\"/\") found \"hello\" - passed\n");
 
 	printf("\nAll Tests and Benchmarks Passed!\n");
 	return 0;

@@ -11,13 +11,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <uk/fs/dirent.h>
 
 struct fusefs_file {
 	struct uk_file f;
 	uk_file_refcnt refcnt;
 	struct uk_file_state fstate;
 	uint64_t nodeid;
-	uint64_t fh;  /* file handle from FUSE_OPEN; (uint64_t)-1 = not yet opened */
+	uint64_t fh;              /* file handle from FUSE_OPEN; (uint64_t)-1 = not yet opened */
+	const struct uk_file *upref; /* parent mount point, set by graft; NULL for non-root nodes */
 };
 
 struct fuse_ukfs_queue fuse_global_queue;
@@ -27,8 +29,11 @@ static uint64_t fuse_req_unique = 1;
 static void fusefs_release(const struct uk_file *f, int what)
 {
 	struct fusefs_file *ff = (struct fusefs_file *)f;
-	if (what & UK_FILE_RELEASE_OBJ)
+	if (what & UK_FILE_RELEASE_OBJ) {
+		if (ff->upref)
+			uk_file_release(ff->upref);
 		uk_free(uk_alloc_get_default(), ff);
+	}
 }
 
 static int fusefs_do_open(struct fusefs_file *ff)
@@ -165,6 +170,18 @@ static int fusefs_lookup(const struct uk_file *f, const char *path, size_t len,
 		if (nout) *nout = len;
 		return UKFS_STOP_FILE;
 	}
+
+	if (len == 2 && path[0] == '.' && path[1] == '.') {
+		if (ff->upref) {
+			uk_file_acquire(ff->upref);
+			out->target = ff->upref;
+		} else {
+			uk_file_acquire(f);
+			out->target = f;
+		}
+		if (nout) *nout = len;
+		return UKFS_STOP_MNT;
+	}
 	
 	struct fuse_ukfs_request req;
 	
@@ -198,6 +215,7 @@ static int fusefs_lookup(const struct uk_file *f, const char *path, size_t len,
 		child->fstate = UK_FILE_STATE_INIT_VALUE(child->fstate);
 		child->nodeid = e->ino;
 		child->fh = (uint64_t)-1;
+		child->upref = NULL;
 
 		child->f.vol = f->vol;
 		child->f.node = child;
@@ -217,9 +235,68 @@ static int fusefs_lookup(const struct uk_file *f, const char *path, size_t len,
 	return -EIO;
 }
 
+static int fusefs_graft(const struct uk_file *f, const struct uk_file *ref)
+{
+	struct fusefs_file *ff = (struct fusefs_file *)f;
+	UK_ASSERT(!ff->upref);
+	uk_file_acquire(ref);
+	ff->upref = ref;
+	return 0;
+}
+
+static ssize_t fusefs_listdir(const struct uk_file *f, size_t *curp,
+			      void *buf, size_t len)
+{
+	struct fusefs_file *ff = (struct fusefs_file *)f;
+	struct fuse_ukfs_request req;
+
+	memset(&req, 0, sizeof(req));
+	req.opcode = FUSE_UKFS_READDIR;
+	req.unique = __atomic_fetch_add(&fuse_req_unique, 1, __ATOMIC_SEQ_CST);
+	req.in.read.ino    = ff->nodeid;
+	req.in.read.fh     = 0;
+	req.in.read.offset = *curp; /* FUSE offset == entry index in hello_ll */
+	req.in.read.size   = 4096;
+	uk_semaphore_init(&req.done, 0);
+
+	fuse_ukfs_queue_push(&fuse_global_queue, &req);
+	uk_semaphore_down(&req.done);
+
+	if (req.error)
+		return req.error;
+	if (!req.reply_data || req.reply_len == 0) {
+		free(req.reply_data);
+		return 0; /* end of directory */
+	}
+
+	/* Decode the first fuse_dirent and re-encode as uk_fs_dirent */
+	struct fuse_dirent *fd = (struct fuse_dirent *)req.reply_data;
+	size_t reclen = UKFS_DIRENT_RECLEN(fd->namelen);
+
+	if (len < reclen) {
+		free(req.reply_data);
+		return -EINVAL;
+	}
+
+	struct uk_fs_dirent *out = buf;
+	memset(out, 0, reclen);
+	out->d_ino    = (ino_t)fd->ino;
+	out->d_off    = (off_t)(*curp + 1);
+	out->d_reclen = (unsigned short)reclen;
+	out->d_type   = (unsigned char)fd->type;
+	memcpy(out->d_name, fd->name, fd->namelen);
+	out->d_name[fd->namelen] = '\0';
+
+	free(req.reply_data);
+	(*curp)++;
+	return (ssize_t)reclen;
+}
+
 static const struct uk_fs_ops fusefs_fs_ops = {
-	.lookup = fusefs_lookup,
-	.stat = fusefs_statfs,
+	.lookup  = fusefs_lookup,
+	.stat    = fusefs_statfs,
+	.listdir = fusefs_listdir,
+	.graft   = fusefs_graft,
 };
 
 static const struct uk_file *fusefs_vopen(union uk_fs_vopen_vol vol __unused,
@@ -247,6 +324,7 @@ static const struct uk_file *fusefs_vopen(union uk_fs_vopen_vol vol __unused,
 #endif
 	n->nodeid = 1; /* FUSE ROOT */
 	n->fh = (uint64_t)-1;
+	n->upref = NULL;
 	
 	n->f.vol = NULL;
 	n->f.node = n;
