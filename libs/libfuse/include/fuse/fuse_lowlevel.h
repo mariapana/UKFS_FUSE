@@ -2229,6 +2229,14 @@ int fuse_session_mount(struct fuse_session *se, const char *mountpoint);
  */
 int fuse_session_loop(struct fuse_session *se);
 
+/**
+ * Return the session registered by the most recent fuse_session_mount() call.
+ * Used internally by the ukfusefs driver to auto-start the daemon thread.
+ *
+ * @return registered session pointer, or NULL if none registered yet
+ */
+struct fuse_session *fuse_session_get_registered(void);
+
 #if FUSE_USE_VERSION < 32
 	int fuse_session_loop_mt_31(struct fuse_session *se, int clone_fd);
 	#define fuse_session_loop_mt(se, clone_fd) fuse_session_loop_mt_31(se, clone_fd)

@@ -1,170 +1,27 @@
 #include <stdio.h>
-#include <uk/fs/driver.h>
-#include <uk/config.h>
-#include <uk/fuse.h>
+#include <errno.h>
 #include <uk/assert.h>
+#include <uk/thread.h>
+#include <uk/sched.h>
+#include <uk/alloc.h>
 #include <string.h>
-#include <stdlib.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <dirent.h>
-#define FUSE_USE_VERSION 31
+#define FUSE_USE_VERSION FUSE_MAKE_VERSION(3, 12)
 #include <fuse_lowlevel.h>
-#include <fuse_i.h>
 
-extern struct fuse_session *hellofs_start(void);
+/* hello_ll.c is compiled with -Dmain=fuse_backend_main */
+extern int fuse_backend_main(int argc, char *argv[]);
 
-/* Test 1: Queue operations */
-void test_queue_operations(void)
+static void backend_thread_fn(void *arg)
 {
-	struct fuse_ukfs_queue q;
-	struct fuse_ukfs_request req1, req2;
-	struct fuse_ukfs_request *r;
-	
-	printf("Test 1: Queue Operations\n");
-	printf("-------------------------\n");
-	
-	/* Initialize queue */
-	fuse_ukfs_queue_init(&q);
-	printf("Queue initialized\n");
-	
-	/* Initialize requests */
-	memset(&req1, 0, sizeof(req1));
-	req1.opcode = FUSE_UKFS_LOOKUP;
-	req1.unique = 1;
-	uk_semaphore_init(&req1.done, 0);
-	
-	memset(&req2, 0, sizeof(req2));
-	req2.opcode = FUSE_UKFS_GETATTR;
-	req2.unique = 2;
-	uk_semaphore_init(&req2.done, 0);
-	
-	/* Push requests */
-	fuse_ukfs_queue_push(&q, &req1);
-	fuse_ukfs_queue_push(&q, &req2);
-	printf("Pushed 2 requests\n");
-	
-	/* Pop requests (FIFO order) */
-	r = fuse_ukfs_queue_pop(&q);
-	UK_ASSERT(r->unique == 1);
-	printf("Popped request 1 (FIFO verified)\n");
-	
-	r = fuse_ukfs_queue_pop(&q);
-	UK_ASSERT(r->unique == 2);
-	printf("Popped request 2\n");
-	
-	printf("\n");
-}
-
-/* Test 3: Driver registration (from M1) */
-void test_driver_registration(void)
-{
-	const struct uk_fs_drv *drv;
-	
-	printf("Test 3: Driver Registration\n");
-	printf("---------------------------\n");
-	
-	/* Check if driver is registered */
-	drv = uk_fs_driver("fuse");
-	
-	if (drv) {
-		printf("FUSE driver found\n");
-		printf("  fstype: %s\n", drv->fstype);
-	} else {
-		printf("FUSE driver NOT found\n");
-	}
-	
-	printf("\n");
-}
-
-/* Test 4: libfuse Reply Wiring (from M3) */
-void test_fuse_reply_wiring(void)
-{
-	struct fuse_ukfs_request ukfs_req;
-	struct fuse_req *fake_req;
-	struct fuse_session fake_se;
-	struct fuse_entry_param fake_entry;
-	struct stat fake_stat;
-	char fake_buf[] = "hello fuse";
-	int ret;
-	
-	printf("Test 4: libfuse Reply Wiring\n");
-	printf("----------------------------\n");
-	
-	/* Initialize the UKFS request and fake FUSE session */
-	memset(&fake_se, 0, sizeof(fake_se));
-	fake_se.conn.no_interrupt = 1;
-	
-	printf("  Testing fuse_reply_err...\n");
-	memset(&ukfs_req, 0, sizeof(ukfs_req));
-	uk_semaphore_init(&ukfs_req.done, 0);
-	fake_req = calloc(1, sizeof(*fake_req));
-	fake_req->ukfs_req = &ukfs_req;
-	fake_req->se = &fake_se;
-	fake_req->ref_cnt = 1;
-	
-	ret = fuse_reply_err(fake_req, ENOENT);
-	UK_ASSERT(ret == 0);
-	UK_ASSERT(ukfs_req.error == -ENOENT);
-	uk_semaphore_down(&ukfs_req.done); /* Should not block */
-	
-	printf("  Testing fuse_reply_entry...\n");
-	memset(&ukfs_req, 0, sizeof(ukfs_req));
-	uk_semaphore_init(&ukfs_req.done, 0);
-	fake_req = calloc(1, sizeof(*fake_req));
-	fake_req->ukfs_req = &ukfs_req;
-	fake_req->se = &fake_se;
-	fake_req->ref_cnt = 1;
-	
-	memset(&fake_entry, 0, sizeof(fake_entry));
-	fake_entry.ino = 42;
-	fake_entry.attr.st_size = 1024;
-	
-	ret = fuse_reply_entry(fake_req, &fake_entry);
-	UK_ASSERT(ret == 0);
-	UK_ASSERT(ukfs_req.error == 0);
-	UK_ASSERT(ukfs_req.reply_len == sizeof(struct fuse_entry_param));
-	UK_ASSERT(((struct fuse_entry_param *)ukfs_req.reply_data)->ino == 42);
-	uk_semaphore_down(&ukfs_req.done);
-	free(ukfs_req.reply_data);
-	
-	printf("  Testing fuse_reply_attr...\n");
-	memset(&ukfs_req, 0, sizeof(ukfs_req));
-	uk_semaphore_init(&ukfs_req.done, 0);
-	fake_req = calloc(1, sizeof(*fake_req));
-	fake_req->ukfs_req = &ukfs_req;
-	fake_req->se = &fake_se;
-	fake_req->ref_cnt = 1;
-	
-	memset(&fake_stat, 0, sizeof(fake_stat));
-	fake_stat.st_ino = 99;
-	
-	ret = fuse_reply_attr(fake_req, &fake_stat, 1.0);
-	UK_ASSERT(ret == 0);
-	UK_ASSERT(ukfs_req.error == 0);
-	UK_ASSERT(ukfs_req.reply_len == sizeof(struct stat));
-	UK_ASSERT(((struct stat *)ukfs_req.reply_data)->st_ino == 99);
-	uk_semaphore_down(&ukfs_req.done);
-	free(ukfs_req.reply_data);
-	
-	printf("  Testing fuse_reply_buf...\n");
-	memset(&ukfs_req, 0, sizeof(ukfs_req));
-	uk_semaphore_init(&ukfs_req.done, 0);
-	fake_req = calloc(1, sizeof(*fake_req));
-	fake_req->ukfs_req = &ukfs_req;
-	fake_req->se = &fake_se;
-	fake_req->ref_cnt = 1;
-	
-	ret = fuse_reply_buf(fake_req, fake_buf, sizeof(fake_buf));
-	UK_ASSERT(ret == 0);
-	UK_ASSERT(ukfs_req.error == 0);
-	UK_ASSERT(ukfs_req.reply_len == sizeof(fake_buf));
-	UK_ASSERT(strcmp((char *)ukfs_req.reply_data, "hello fuse") == 0);
-	uk_semaphore_down(&ukfs_req.done);
-	free(ukfs_req.reply_data);
-	
-	printf("libfuse integration verified!\n\n");
+	(void)arg;
+	/* Mirror how hello_ll would be launched on Linux: -f (foreground),
+	 * -s (single-threaded), mountpoint "/" */
+	char *bk_argv[] = { "fuse", "-f", "-s", "/" };
+	fuse_backend_main(4, bk_argv);
 }
 
 int main(int argc __unused, char *argv[] __unused)
@@ -178,37 +35,34 @@ int main(int argc __unused, char *argv[] __unused)
 	printf("========================================\n");
 	printf("\n");
 
-	// test_queue_throughput();
-	// test_queue_latency();
-
 	printf("\n========================================\n");
 	printf("  FUSE-UKFS M4: LOOKUP & GETATTR Tests\n");
 	printf("========================================\n\n");
 
-	struct fuse_session *se = hellofs_start();
-	if (!se) {
-		printf("Failed to start FUSE session\n");
-		return 1;
-	}
+	/* Start the FUSE backend in its own thread; it will call
+	 * fuse_session_new + fuse_session_mount + fuse_session_loop (blocks). */
+	struct uk_alloc *a = uk_alloc_get_default();
+	struct uk_thread *bt = uk_thread_create_fn1(a,
+						     backend_thread_fn, NULL,
+						     a, 32768,
+						     NULL, 0,
+						     a, false,
+						     "fuse-backend",
+						     NULL, NULL);
+	UK_ASSERT(bt != NULL);
+	uk_sched_thread_add(uk_sched_current(), bt);
 
+	/* Yield until fuse_session_mount has registered the session */
+	while (fuse_session_get_registered() == NULL)
+		uk_sched_yield();
 
-	/* Initialize FUSE message queue */
-	fuse_ukfs_queue_init(&fuse_global_queue);
-
-	/* Mount the filesystem. */
+	/* Mount the filesystem; this triggers fusefs_vopen which initialises
+	 * the queue and auto-starts the daemon using the registered session. */
 	printf("[TRACE] About to mount fuse at /...\n");
 	ret = mount("none", "/", "fuse", 0, NULL);
 	printf("[TRACE] mount returned %d (errno=%d)\n", ret, errno);
 	UK_ASSERT(ret == 0);
-	printf("[+] FUSE mounted at /\n");
-
-	/* Start daemon connecting ukfs with se */
-	ret = fuse_daemon_start(&fuse_global_queue, se);
-	UK_ASSERT(ret == 0);
-	printf("[+] FUSE daemon thread started\n");
-
-	/* We sleep briefly to ensure daemon starts and spins up cleanly */
-	for (volatile int i = 0; i < 10000000; i++) {}
+	printf("[+] FUSE mounted at / (daemon started automatically)\n");
 
 	/* Test 1: stat("/") -> GETATTR(1) */
 	printf("[TRACE] About to stat(/)...\n");

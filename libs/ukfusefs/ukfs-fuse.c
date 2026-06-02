@@ -290,15 +290,16 @@ static ssize_t fusefs_listdir(const struct uk_file *f, size_t *curp,
 
 	struct uk_fs_dirent *out = buf;
 	memset(out, 0, reclen);
+	size_t next_off = (size_t)fd->off;  /* save before free */
 	out->d_ino    = (ino_t)fd->ino;
-	out->d_off    = (off_t)(*curp + 1);
+	out->d_off    = (off_t)fd->off;
 	out->d_reclen = (unsigned short)reclen;
 	out->d_type   = (unsigned char)fd->type;
 	memcpy(out->d_name, fd->name, fd->namelen);
 	out->d_name[fd->namelen] = '\0';
 
 	free(req.reply_data);
-	(*curp)++;
+	*curp = next_off;  /* advance cursor to FUSE next-offset */
 	return (ssize_t)reclen;
 }
 
@@ -321,7 +322,13 @@ static const struct uk_file *fusefs_vopen(union uk_fs_vopen_vol vol __unused,
 
 	uk_pr_info("FUSE Root node successfully instantiated. Invoking Queue Init.\n");
 	fuse_ukfs_queue_init(&fuse_global_queue);
-	
+
+	struct fuse_session *se = fuse_session_get_registered();
+	if (se)
+		fuse_daemon_start(&fuse_global_queue, se);
+	else
+		uk_pr_warn("fusefs_vopen: no FUSE session registered; call fuse_session_mount() before mount()\n");
+
 	return &n->f;
 }
 

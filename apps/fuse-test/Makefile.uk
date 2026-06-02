@@ -6,3 +6,4 @@ APPFUSE_TEST_CINCLUDES-y += -I$(APPFUSE_TEST_BASE)/../../libs/libfuse/lib
 
 APPFUSE_TEST_SRCS-y += $(APPFUSE_TEST_BASE)/main.c
 APPFUSE_TEST_SRCS-y += $(APPFUSE_TEST_BASE)/hello_ll.c
+APPFUSE_TEST_HELLO_LL_FLAGS-y += -Dmain=fuse_backend_main

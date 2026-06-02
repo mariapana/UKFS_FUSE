@@ -4160,133 +4160,54 @@ int fuse_session_receive_buf_internal(struct fuse_session *se,
 	return _fuse_session_receive_buf(se, buf, ch, true);
 }
 
+/* Session registered by fuse_session_mount; read by fusefs_vopen to
+ * auto-start the daemon thread at POSIX mount time. */
+static struct fuse_session *fuse_registered_session;
+
+struct fuse_session *fuse_session_get_registered(void)
+{
+	return fuse_registered_session;
+}
+
 struct fuse_session *
 fuse_session_new_versioned(struct fuse_args *args,
 			   const struct fuse_lowlevel_ops *op, size_t op_size,
 			   struct libfuse_version *version, void *userdata)
 {
-	int err;
-	struct fuse_session *se;
-	struct mount_opts *mo;
+	(void)args;
+	(void)version;
 
 	if (op == NULL || op_size == 0) {
 		fuse_log(FUSE_LOG_ERR,
-			 "fuse: warning: empty op list passed to fuse_session_new()\n");
+			 "fuse: empty op list passed to fuse_session_new()\n");
 		return NULL;
 	}
-
-	if (version == NULL) {
-		fuse_log(FUSE_LOG_ERR, "fuse: warning: version not passed to fuse_session_new()\n");
-		return NULL;
-	}
-
-	if (sizeof(struct fuse_lowlevel_ops) < op_size) {
-		fuse_log(FUSE_LOG_ERR, "fuse: warning: library too old, some operations may not work\n");
+	if (sizeof(struct fuse_lowlevel_ops) < op_size)
 		op_size = sizeof(struct fuse_lowlevel_ops);
-	}
 
-	if (args == NULL || args->argc == 0) {
-		fuse_log(FUSE_LOG_ERR, "fuse: empty argv passed to fuse_session_new().\n");
+	struct fuse_session *se = calloc(1, sizeof(*se));
+	if (!se) {
+		fuse_log(FUSE_LOG_ERR, "fuse: failed to allocate fuse object\n");
 		return NULL;
 	}
 
-	se = (struct fuse_session *) calloc(1, sizeof(struct fuse_session));
-	if (se == NULL) {
-		fuse_log(FUSE_LOG_ERR, "fuse: failed to allocate fuse object\n");
-		goto out1;
-	}
-	se->fd = -1;
-	se->conn.max_write = FUSE_DEFAULT_MAX_PAGES_LIMIT * getpagesize();
-	se->bufsize = se->conn.max_write + FUSE_BUFFER_HEADER_SIZE;
-	se->conn.max_readahead = UINT_MAX;
-
-	/*
-	 * Allow overriding with env, mostly to avoid the need to modify
-	 * all tests. I.e. to test with and without io-uring being enabled.
-	 */
-	se->uring.enable = getenv("FUSE_URING_ENABLE") ?
-				   atoi(getenv("FUSE_URING_ENABLE")) :
-				   SESSION_DEF_URING_ENABLE;
-	se->uring.q_depth = getenv("FUSE_URING_QUEUE_DEPTH") ?
-				    atoi(getenv("FUSE_URING_QUEUE_DEPTH")) :
-				    SESSION_DEF_URING_Q_DEPTH;
-
-	/* Parse options */
-	if(fuse_opt_parse(args, se, fuse_ll_opts, NULL) == -1)
-		goto out2;
-	if(se->deny_others) {
-		/* Allowing access only by root is done by instructing
-		 * kernel to allow access by everyone, and then restricting
-		 * access to root and mountpoint owner in libfuse.
-		 */
-		// We may be adding the option a second time, but
-		// that doesn't hurt.
-		if(fuse_opt_add_arg(args, "-oallow_other") == -1)
-			goto out2;
-	}
-	mo = parse_mount_opts(args);
-	if (mo == NULL)
-		goto out3;
-
-	if(args->argc == 1 &&
-	   args->argv[0][0] == '-') {
-		fuse_log(FUSE_LOG_ERR, "fuse: warning: argv[0] looks like an option, but "
-			"will be ignored\n");
-	} else if (args->argc != 1) {
-		int i;
-		fuse_log(FUSE_LOG_ERR, "fuse: unknown option(s): `");
-		for(i = 1; i < args->argc-1; i++)
-			fuse_log(FUSE_LOG_ERR, "%s ", args->argv[i]);
-		fuse_log(FUSE_LOG_ERR, "%s'\n", args->argv[i]);
-		goto out4;
-	}
-
-	if (se->debug)
-		fuse_log(FUSE_LOG_DEBUG, "FUSE library version: %s\n", PACKAGE_VERSION);
+	se->got_init         = 1;
+	se->conn.proto_major = 7;
+	se->conn.proto_minor = 31;
+	se->conn.max_read    = 131072;
+	se->conn.max_write   = 131072;
 
 	list_init_req(&se->list);
 	list_init_req(&se->interrupts);
 	list_init_nreq(&se->notify_list);
 	se->notify_ctr = 1;
 	pthread_mutex_init(&se->lock, NULL);
-	sem_init(&se->mt_finish, 0, 0);
 	pthread_mutex_init(&se->mt_lock, NULL);
 
-	err = pthread_key_create(&se->pipe_key, fuse_ll_pipe_destructor);
-	if (err) {
-		fuse_log(FUSE_LOG_ERR, "fuse: failed to create thread specific key: %s\n",
-			strerror(err));
-		goto out5;
-	}
-
 	memcpy(&se->op, op, op_size);
-	se->owner = getuid();
 	se->userdata = userdata;
 
-	se->mo = mo;
-
-	/* Fuse server application should pass the version it was compiled
-	 * against and pass it. If a libfuse version accidentally introduces an
-	 * ABI incompatibility, it might be possible to 'fix' that at run time,
-	 * by checking the version numbers.
-	 */
-	se->version = *version;
-
 	return se;
-
-out5:
-	sem_destroy(&se->mt_finish);
-	pthread_mutex_destroy(&se->mt_lock);
-	pthread_mutex_destroy(&se->lock);
-out4:
-	fuse_opt_free_args(args);
-out3:
-	if (mo != NULL)
-		destroy_mount_opts(mo);
-out2:
-	free(se);
-out1:
-	return NULL;
 }
 
 struct fuse_session *fuse_session_new_30(struct fuse_args *args,
@@ -4367,65 +4288,23 @@ int fuse_session_custom_io_30(struct fuse_session *se,
 			offsetof(struct fuse_custom_io, clone_fd), fd);
 }
 
-int fuse_session_mount(struct fuse_session *se, const char *_mountpoint)
+int fuse_session_mount(struct fuse_session *se, const char *mountpoint)
 {
-	int fd;
-	char *mountpoint;
-
-	if (_mountpoint == NULL) {
-		fuse_log(FUSE_LOG_ERR, "Invalid null-ptr mountpoint!\n");
-		return -1;
-	}
-
-	mountpoint = strdup(_mountpoint);
-	if (mountpoint == NULL) {
-		fuse_log(FUSE_LOG_ERR, "Failed to allocate memory for mountpoint. Error: %s\n",
-			strerror(errno));
-		return -1;
-	}
-
-	/*
-	 * Make sure file descriptors 0, 1 and 2 are open, otherwise chaos
-	 * would ensue.
-	 */
-	do {
-		fd = open("/dev/null", O_RDWR);
-		if (fd > 2)
-			close(fd);
-	} while (fd >= 0 && fd <= 2);
-
-	/*
-	 * To allow FUSE daemons to run without privileges, the caller may open
-	 * /dev/fuse before launching the file system and pass on the file
-	 * descriptor by specifying /dev/fd/N as the mount point. Note that the
-	 * parent process takes care of performing the mount in this case.
-	 */
-	fd = fuse_mnt_parse_fuse_fd(mountpoint);
-	if (fd != -1) {
-		if (fcntl(fd, F_GETFD) == -1) {
-			fuse_log(FUSE_LOG_ERR,
-				"fuse: Invalid file descriptor /dev/fd/%u\n",
-				fd);
-			goto error_out;
-		}
-		se->fd = fd;
-		return 0;
-	}
-
-	/* Open channel */
-	fd = fuse_kern_mount(mountpoint, se->mo);
-	if (fd == -1)
-		goto error_out;
-	se->fd = fd;
-
-	/* Save mountpoint */
-	se->mountpoint = mountpoint;
-
+	(void)mountpoint;  /* UKFS handles the actual mount point via posix-vfs */
+	fuse_registered_session = se;
 	return 0;
+}
 
-error_out:
-	free(mountpoint);
-	return -1;
+int fuse_session_loop(struct fuse_session *se)
+{
+	(void)se;
+	/* Block the calling thread. The daemon thread processes requests via
+	 * fuse_global_queue. This matches Linux semantics where fuse_session_loop
+	 * blocks until unmount; the unikernel exits from main() instead. */
+	sem_t blocker;
+	sem_init(&blocker, 0, 0);
+	sem_wait(&blocker);
+	return 0;
 }
 
 int fuse_session_fd(struct fuse_session *se)

@@ -27,8 +27,16 @@ void fuse_loop_cfg_set_idle_threads(struct fuse_loop_config *config, unsigned in
 void fuse_loop_cfg_set_max_threads(struct fuse_loop_config *config, unsigned int value) {}
 void fuse_loop_cfg_set_clone_fd(struct fuse_loop_config *config, unsigned int value) {}
 
-int fuse_set_signal_handlers(struct fuse_session *se) { return -1; }
-void fuse_remove_signal_handlers(struct fuse_session *se) {}
+int fuse_set_signal_handlers(struct fuse_session *se) { (void)se; return 0; }
+void fuse_remove_signal_handlers(struct fuse_session *se) { (void)se; }
+
+int fuse_session_loop_mt_312(struct fuse_session *se, struct fuse_loop_config *config)
+{
+    (void)se; (void)config;
+    return -1;  /* multi-threaded loop not supported; use -s (singlethread) */
+}
+
+const char *fuse_pkgversion(void) { return "3.12.0-ukfuse"; }
 
 struct fuse_chan *fuse_chan_get(struct fuse_chan *ch) { return ch; }
 
