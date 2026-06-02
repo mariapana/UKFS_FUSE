@@ -9,11 +9,6 @@
 
 #include <fuse_i.h>
 #include <uk/fuse.h>
-#include <stdarg.h>
-
-static void my_log_func(enum fuse_log_level level, const char *fmt, va_list ap) {
-	vprintf(fmt, ap);
-}
 
 static const char *hello_str = "Hello World!\n";
 static const char *hello_name = "hello";

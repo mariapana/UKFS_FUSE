@@ -27,7 +27,6 @@ enum fuse_ukfs_opcode {
 	FUSE_UKFS_OPEN,
 	FUSE_UKFS_READ,
 	FUSE_UKFS_READDIR,
-	FUSE_UKFS_OPENDIR,
 	/* More opcodes to be added in later milestones */
 };
 
@@ -60,6 +59,13 @@ struct fuse_ukfs_request {
 			uint64_t offset;
 			uint32_t size;
 		} read;
+
+		struct {
+			uint64_t ino;
+			uint64_t fh;
+			uint64_t offset;
+			uint32_t size;
+		} readdir;
 	} in;
 	
 	/* Output/reply data */

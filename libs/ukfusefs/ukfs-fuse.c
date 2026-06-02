@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <stdio.h>
 #include <uk/fs/dirent.h>
 
 struct fusefs_file {
@@ -114,7 +115,6 @@ static ssize_t fusefs_read(const struct uk_file *f, const struct iovec *iov,
 }
 
 
-#include <stdio.h>
 static int fusefs_getstat(const struct uk_file *f, unsigned int mask __unused, struct uk_statx *arg)
 {
 	struct fusefs_file *ff = (struct fusefs_file *)f;
@@ -153,6 +153,30 @@ static const struct uk_file_ops fusefs_file_ops_stat = {
 	.read = fusefs_read,
 	.getstat = fusefs_getstat,
 };
+
+static struct fusefs_file *fusefs_file_alloc(uint64_t nodeid, const void *vol,
+					     const struct uk_fs_ops *fsops)
+{
+	struct fusefs_file *ff = uk_malloc(uk_alloc_get_default(), sizeof(*ff));
+	if (!ff)
+		return NULL;
+
+	ff->refcnt = UK_FILE_REFCNT_INIT_VALUE(ff->refcnt);
+	ff->fstate = UK_FILE_STATE_INIT_VALUE(ff->fstate);
+	ff->nodeid = nodeid;
+	ff->fh     = (uint64_t)-1;
+	ff->upref  = NULL;
+
+	ff->f.vol      = vol;
+	ff->f.node     = ff;
+	ff->f.ops      = &fusefs_file_ops_stat;
+	ff->f.fsops    = fsops;
+	ff->f.refcnt   = &ff->refcnt;
+	ff->f.state    = &ff->fstate;
+	ff->f._release = fusefs_release;
+
+	return ff;
+}
 
 static int fusefs_statfs(const struct uk_file *f __unused, struct statfs *buf __unused)
 {
@@ -205,31 +229,17 @@ static int fusefs_lookup(const struct uk_file *f, const char *path, size_t len,
 
 	struct fuse_entry_param *e = req.reply_data;
 	if (e) {
-		struct fusefs_file *child = uk_malloc(uk_alloc_get_default(), sizeof(*child));
+		struct fusefs_file *child = fusefs_file_alloc(e->ino, f->vol, f->fsops);
 		if (!child) {
 			free(e);
 			return -ENOMEM;
 		}
 
-		child->refcnt = UK_FILE_REFCNT_INIT_VALUE(child->refcnt);
-		child->fstate = UK_FILE_STATE_INIT_VALUE(child->fstate);
-		child->nodeid = e->ino;
-		child->fh = (uint64_t)-1;
-		child->upref = NULL;
-
-		child->f.vol = f->vol;
-		child->f.node = child;
-		child->f.ops = &fusefs_file_ops_stat;
-		child->f.fsops = f->fsops;
-		child->f.refcnt = &child->refcnt;
-		child->f.state = &child->fstate;
-		child->f._release = fusefs_release;
-
 		out->target = &child->f;
 		if (nout) *nout = len;
-		
+
 		free(e);
-		return UKFS_STOP_FILE; /* Finished mapping string */
+		return UKFS_STOP_FILE;
 	}
 
 	return -EIO;
@@ -253,10 +263,10 @@ static ssize_t fusefs_listdir(const struct uk_file *f, size_t *curp,
 	memset(&req, 0, sizeof(req));
 	req.opcode = FUSE_UKFS_READDIR;
 	req.unique = __atomic_fetch_add(&fuse_req_unique, 1, __ATOMIC_SEQ_CST);
-	req.in.read.ino    = ff->nodeid;
-	req.in.read.fh     = 0;
-	req.in.read.offset = *curp; /* FUSE offset == entry index in hello_ll */
-	req.in.read.size   = 4096;
+	req.in.readdir.ino    = ff->nodeid;
+	req.in.readdir.fh     = 0;
+	req.in.readdir.offset = *curp; /* FUSE offset == entry index in hello_ll */
+	req.in.readdir.size   = 4096;
 	uk_semaphore_init(&req.done, 0);
 
 	fuse_ukfs_queue_push(&fuse_global_queue, &req);
@@ -304,36 +314,11 @@ static const struct uk_file *fusefs_vopen(union uk_fs_vopen_vol vol __unused,
 					  union uk_fs_vopen_data data __unused,
 					  size_t fmt __unused)
 {
-	printf("[TRACE] fusefs_vopen called!\n");
-	struct fusefs_file *n = uk_malloc(uk_alloc_get_default(), sizeof(*n));
-	if (!n) return ERR2PTR(-ENOMEM);
-	
-	n->refcnt = UK_FILE_REFCNT_INIT_VALUE(n->refcnt);
-	uk_rwlock_init(&n->fstate.iolock);
-	n->fstate.pollq.events = 0;
-	n->fstate.pollq.waitmask = 0;
-	uk_waitq_init(&n->fstate.pollq.waitq);
-	uk_rwlock_init(&n->fstate.pollq.waitlock);
-#if CONFIG_LIBUKFILE_CHAINUPDATE
-	UK_STAILQ_INIT(&n->fstate.pollq.prop);
-	uk_mutex_init(&n->fstate.pollq.proplock);
-	n->fstate.pollq.propmask = 0;
-#endif
-#if CONFIG_LIBUKFILE_POLLED
-	n->fstate.pollq.poll_fn = NULL;
-#endif
-	n->nodeid = 1; /* FUSE ROOT */
-	n->fh = (uint64_t)-1;
-	n->upref = NULL;
-	
-	n->f.vol = NULL;
-	n->f.node = n;
-	n->f.ops = &fusefs_file_ops_stat;
-	n->f.fsops = &fusefs_fs_ops;
-	n->f.refcnt = &n->refcnt;
-	n->f.state = &n->fstate;
-	n->f._release = fusefs_release;
-	
+	uk_pr_debug("fusefs_vopen called\n");
+	struct fusefs_file *n = fusefs_file_alloc(1 /* FUSE root inode */, NULL, &fusefs_fs_ops);
+	if (!n)
+		return ERR2PTR(-ENOMEM);
+
 	uk_pr_info("FUSE Root node successfully instantiated. Invoking Queue Init.\n");
 	fuse_ukfs_queue_init(&fuse_global_queue);
 	
