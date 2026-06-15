@@ -1,0 +1,3 @@
+config APP_FUSE_CORRECTNESS_TEST
+	bool "FUSE Correctness Test App"
+	default y
