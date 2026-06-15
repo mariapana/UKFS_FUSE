@@ -1,0 +1,9 @@
+$(eval $(call addlib,appfuse_perf_test))
+
+APPFUSE_PERF_TEST_CINCLUDES-y += -I$(APPFUSE_PERF_TEST_BASE)/../../libs/libfuse/include/fuse
+APPFUSE_PERF_TEST_CINCLUDES-y += -I$(APPFUSE_PERF_TEST_BASE)/../../libs/libfuse/include
+APPFUSE_PERF_TEST_CINCLUDES-y += -I$(APPFUSE_PERF_TEST_BASE)/../../libs/libfuse/lib
+
+APPFUSE_PERF_TEST_SRCS-y += $(APPFUSE_PERF_TEST_BASE)/main.c
+APPFUSE_PERF_TEST_SRCS-y += $(APPFUSE_PERF_TEST_BASE)/hello_ll.c
+APPFUSE_PERF_TEST_HELLO_LL_FLAGS-y += -Dmain=fuse_backend_main
